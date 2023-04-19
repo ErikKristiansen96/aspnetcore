@@ -2,14 +2,18 @@
 Microsoft.Extensions.Caching.StackExchangeRedis.RedisCache
 Microsoft.Extensions.Caching.StackExchangeRedis.RedisCache.Dispose() -> void
 Microsoft.Extensions.Caching.StackExchangeRedis.RedisCache.Get(string! key) -> byte[]?
+Microsoft.Extensions.Caching.StackExchangeRedis.RedisCache.GetHashField(string! key, string! field) -> byte[]?
 Microsoft.Extensions.Caching.StackExchangeRedis.RedisCache.GetAsync(string! key, System.Threading.CancellationToken token = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<byte[]?>!
+Microsoft.Extensions.Caching.StackExchangeRedis.RedisCache.GetHashAsync(string! key, string! field, System.Threading.CancellationToken token = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<byte[]?>!
 Microsoft.Extensions.Caching.StackExchangeRedis.RedisCache.RedisCache(Microsoft.Extensions.Options.IOptions<Microsoft.Extensions.Caching.StackExchangeRedis.RedisCacheOptions!>! optionsAccessor) -> void
 Microsoft.Extensions.Caching.StackExchangeRedis.RedisCache.Refresh(string! key) -> void
 Microsoft.Extensions.Caching.StackExchangeRedis.RedisCache.RefreshAsync(string! key, System.Threading.CancellationToken token = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
 Microsoft.Extensions.Caching.StackExchangeRedis.RedisCache.Remove(string! key) -> void
 Microsoft.Extensions.Caching.StackExchangeRedis.RedisCache.RemoveAsync(string! key, System.Threading.CancellationToken token = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
 Microsoft.Extensions.Caching.StackExchangeRedis.RedisCache.Set(string! key, byte[]! value, Microsoft.Extensions.Caching.Distributed.DistributedCacheEntryOptions! options) -> void
+Microsoft.Extensions.Caching.StackExchangeRedis.RedisCache.SetJsonHashSet(string! key, byte[]! value, Microsoft.Extensions.Caching.Distributed.DistributedCacheEntryOptions! options) -> void
 Microsoft.Extensions.Caching.StackExchangeRedis.RedisCache.SetAsync(string! key, byte[]! value, Microsoft.Extensions.Caching.Distributed.DistributedCacheEntryOptions! options, System.Threading.CancellationToken token = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
+Microsoft.Extensions.Caching.StackExchangeRedis.RedisCache.SetJsonHashAsync(string! key, byte[]! value, Microsoft.Extensions.Caching.Distributed.DistributedCacheEntryOptions! options, System.Threading.CancellationToken token = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
 Microsoft.Extensions.Caching.StackExchangeRedis.RedisCacheOptions
 Microsoft.Extensions.Caching.StackExchangeRedis.RedisCacheOptions.Configuration.get -> string?
 Microsoft.Extensions.Caching.StackExchangeRedis.RedisCacheOptions.Configuration.set -> void

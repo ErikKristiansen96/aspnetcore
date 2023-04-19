@@ -8,12 +8,14 @@ using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Collections.Generic;
+using System.Linq;
 using Microsoft.AspNetCore.Shared;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using StackExchange.Redis;
-
+using Newtonsoft.Json;
 namespace Microsoft.Extensions.Caching.StackExchangeRedis;
 
 /// <summary>
@@ -51,10 +53,23 @@ public partial class RedisCache : IDistributedCache, IDisposable
                   redis.call('EXPIRE', KEYS[1], ARGV[3])
                 end
                 return 1");
+    private const string SetJsonScript = (@"
+                redis.call('HSET', KEYS[1], 'absexp', ARGV[1], 'sldexp', ARGV[2], ARGV[5], ARGV[4])
+                if ARGV[3] ~= '-1' then
+                  redis.call('EXPIRE', KEYS[1], ARGV[3])
+                end
+                return 1");
+    private const string SetJsonScriptPreExtendedSetCommand = (@"
+                redis.call('HMSET', KEYS[1], 'absexp', ARGV[1], 'sldexp', ARGV[2], ARGV[5], ARGV[4])
+                if ARGV[3] ~= '-1' then
+                  redis.call('EXPIRE', KEYS[1], ARGV[3])
+                end
+                return 1");
 
     private const string AbsoluteExpirationKey = "absexp";
     private const string SlidingExpirationKey = "sldexp";
     private const string DataKey = "data";
+    private const string EmptyData = "empty";
 
     // combined keys - same hash keys fetched constantly; avoid allocating an array each time
     private static readonly RedisValue[] _hashMembersAbsoluteExpirationSlidingExpirationData = new RedisValue[] { AbsoluteExpirationKey, SlidingExpirationKey, DataKey };
@@ -70,6 +85,9 @@ public partial class RedisCache : IDistributedCache, IDisposable
     private volatile IDatabase? _cache;
     private bool _disposed;
     private string _setScript = SetScript;
+    private string _setScriptJson = SetJsonScript;
+
+    private readonly string stringCulture = "en-US";
 
     private readonly RedisCacheOptions _options;
     private readonly RedisKey _instancePrefix;
@@ -145,6 +163,14 @@ public partial class RedisCache : IDistributedCache, IDisposable
     }
 
     /// <inheritdoc />
+    public byte[]? GetHashField(string key, string field)
+    {
+        ArgumentNullThrowHelper.ThrowIfNull(key);
+
+        return GetAndRefreshField(key, field);
+    }
+
+    /// <inheritdoc />
     public async Task<byte[]?> GetAsync(string key, CancellationToken token = default)
     {
         ArgumentNullThrowHelper.ThrowIfNull(key);
@@ -152,6 +178,16 @@ public partial class RedisCache : IDistributedCache, IDisposable
         token.ThrowIfCancellationRequested();
 
         return await GetAndRefreshAsync(key, getData: true, token: token).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<byte[]?> GetHashAsync(string key, string field, CancellationToken token = default)
+    {
+        ArgumentNullThrowHelper.ThrowIfNull(key);
+
+        token.ThrowIfCancellationRequested();
+
+        return await GetAndRefreshHashFieldAsync(key, field, token: token).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -178,6 +214,65 @@ public partial class RedisCache : IDistributedCache, IDisposable
                         value
                 });
         }
+
+        //private const string SetScript = (@"
+                // redis.call('HSET', KEYS[1], 'absexp', ARGV[1], 'sldexp', ARGV[2], 'data', ARGV[4])
+                // if ARGV[3] ~= '-1' then
+                //   redis.call('EXPIRE', KEYS[1], ARGV[3])
+                // end
+                // return 1");
+        catch (Exception ex)
+        {
+            OnRedisError(ex, cache);
+            throw;
+        }
+    }
+
+    /// <inheritdoc/>
+    public void SetJsonHashSet(string key, byte[] value, DistributedCacheEntryOptions options)
+    {
+        ArgumentNullThrowHelper.ThrowIfNull(key);
+        ArgumentNullThrowHelper.ThrowIfNull(value);
+        ArgumentNullThrowHelper.ThrowIfNull(options);
+
+        var cache = Connect();
+
+        var creationTime = DateTimeOffset.UtcNow;
+
+        var absoluteExpiration = GetAbsoluteExpiration(creationTime, options);
+        var decodeValue = Encoding.UTF8.GetString(value);
+
+        try
+        {
+            Dictionary<string, object> json;
+            if (decodeValue.StartsWith("[", false, new System.Globalization.CultureInfo(stringCulture))){
+                var listDiction = JsonConvert.DeserializeObject<List<Dictionary<string, object>>>(decodeValue);
+                json = listDiction!.ToDictionary(p => p.Values.First().ToString()!, p => (object)JsonConvert.SerializeObject(p));
+            } else {
+                json = JsonConvert.DeserializeObject<Dictionary<string, object>>(decodeValue)!;
+            }
+            foreach (var fieldData in json){
+                if (fieldData.Key is null || fieldData.Value is null){
+                    continue;
+                }
+                cache.ScriptEvaluate(_setScriptJson, new RedisKey[] { _instancePrefix.Append(key) },
+                    new RedisValue[]
+                    {
+                            absoluteExpiration?.Ticks ?? NotPresent,
+                            options.SlidingExpiration?.Ticks ?? NotPresent,
+                            GetExpirationInSeconds(creationTime, absoluteExpiration, options) ?? NotPresent,
+                            Encoding.UTF8.GetBytes(fieldData.Value?.ToString() ?? EmptyData),
+                            fieldData.Key
+                    }
+                //     redis.call('HSET', KEYS[1], 'absexp', ARGV[1], 'sldexp', ARGV[2], ARGV[5], ARGV[4])
+                // if ARGV[3] ~= '-1' then
+                //   redis.call('EXPIRE', KEYS[1], ARGV[3])
+                // end
+                // return 1")
+                );
+            }
+        }
+
         catch (Exception ex)
         {
             OnRedisError(ex, cache);
@@ -211,6 +306,57 @@ public partial class RedisCache : IDistributedCache, IDisposable
                 GetExpirationInSeconds(creationTime, absoluteExpiration, options) ?? NotPresent,
                 value
                 }).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            OnRedisError(ex, cache);
+            throw;
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task SetJsonHashAsync(string key, byte[] value, DistributedCacheEntryOptions options, CancellationToken token = default)
+    {
+        ArgumentNullThrowHelper.ThrowIfNull(key);
+        ArgumentNullThrowHelper.ThrowIfNull(value);
+        ArgumentNullThrowHelper.ThrowIfNull(options);
+
+        token.ThrowIfCancellationRequested();
+
+        var cache = await ConnectAsync(token).ConfigureAwait(false);
+        Debug.Assert(cache is not null);
+
+        var creationTime = DateTimeOffset.UtcNow;
+
+        var absoluteExpiration = GetAbsoluteExpiration(creationTime, options);
+        var decodeValue = Encoding.UTF8.GetString(value);
+
+        try
+        {
+            Dictionary<string, object> json;
+            if (decodeValue.StartsWith("[", false, new System.Globalization.CultureInfo(stringCulture))){
+                var listDiction = JsonConvert.DeserializeObject<List<Dictionary<string, object>>>(decodeValue);
+                json = listDiction!.ToDictionary(p => p.Values.First().ToString()!, p => (object)JsonConvert.SerializeObject(p));
+            } else {
+                json = JsonConvert.DeserializeObject<Dictionary<string, object>>(decodeValue)!;
+            }
+            if (json is null){
+                return;
+            }
+            foreach (var fieldData in json){
+                if (fieldData.Key is null || fieldData.Value is null){
+                    continue;
+                }
+                await cache.ScriptEvaluateAsync(_setScriptJson, new RedisKey[] { _instancePrefix.Append(key) },
+                    new RedisValue[]
+                    {
+                    absoluteExpiration?.Ticks ?? NotPresent,
+                    options.SlidingExpiration?.Ticks ?? NotPresent,
+                    GetExpirationInSeconds(creationTime, absoluteExpiration, options) ?? NotPresent,
+                    Encoding.UTF8.GetBytes(fieldData.Value?.ToString() ?? EmptyData),
+                    fieldData.Key
+                    }).ConfigureAwait(false);
+            }
         }
         catch (Exception ex)
         {
@@ -351,6 +497,7 @@ public partial class RedisCache : IDistributedCache, IDisposable
                 if (connection.GetServer(endPoint).Version < ServerVersionWithExtendedSetCommand)
                 {
                     _setScript = SetScriptPreExtendedSetCommand;
+                    _setScriptJson = SetJsonScriptPreExtendedSetCommand;
                     return;
                 }
             }
@@ -408,6 +555,41 @@ public partial class RedisCache : IDistributedCache, IDisposable
         return null;
     }
 
+    private byte[]? GetAndRefreshField(string key, string fields)
+    {
+        ArgumentNullThrowHelper.ThrowIfNull(key);
+
+        var cache = Connect();
+        var hashFields = GetHashFields(true);
+        hashFields[2] = new RedisValue(fields); //Overwrite "data"
+
+        // This also resets the LRU status as desired.
+        // TODO: Can this be done in one operation on the server side? Probably, the trick would just be the DateTimeOffset math.
+        RedisValue[] results;
+        try
+        {
+            results = cache.HashGet(_instancePrefix.Append(key), hashFields);
+        }
+        catch (Exception ex)
+        {
+            OnRedisError(ex, cache);
+            throw;
+        }
+
+        if (results.Length >= 2)
+        {
+            MapMetadata(results, out DateTimeOffset? absExpr, out TimeSpan? sldExpr);
+            Refresh(cache, key, absExpr, sldExpr);
+        }
+
+        if (results.Length >= 3 && !results[2].IsNull)
+        {
+            return results[2];
+        }
+
+        return null;
+    }
+
     private async Task<byte[]?> GetAndRefreshAsync(string key, bool getData, CancellationToken token = default)
     {
         ArgumentNullThrowHelper.ThrowIfNull(key);
@@ -423,6 +605,44 @@ public partial class RedisCache : IDistributedCache, IDisposable
         try
         {
             results = await cache.HashGetAsync(_instancePrefix.Append(key), GetHashFields(getData)).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            OnRedisError(ex, cache);
+            throw;
+        }
+
+        if (results.Length >= 2)
+        {
+            MapMetadata(results, out DateTimeOffset? absExpr, out TimeSpan? sldExpr);
+            await RefreshAsync(cache, key, absExpr, sldExpr, token).ConfigureAwait(false);
+        }
+
+        if (results.Length >= 3 && !results[2].IsNull)
+        {
+            return results[2];
+        }
+
+        return null;
+    }
+
+    private async Task<byte[]?> GetAndRefreshHashFieldAsync(string key, string field, CancellationToken token = default)
+    {
+        ArgumentNullThrowHelper.ThrowIfNull(key);
+
+        token.ThrowIfCancellationRequested();
+
+        var cache = await ConnectAsync(token).ConfigureAwait(false);
+        Debug.Assert(cache is not null);
+        var hashFields = GetHashFields(true);
+        hashFields[2] = field;
+
+        // This also resets the LRU status as desired.
+        // TODO: Can this be done in one operation on the server side? Probably, the trick would just be the DateTimeOffset math.
+        RedisValue[] results;
+        try
+        {
+            results = await cache.HashGetAsync(_instancePrefix.Append(key), hashFields).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
